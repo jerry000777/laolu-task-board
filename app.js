@@ -1,4 +1,5 @@
 const STORAGE_KEY = "luis-task-board-v1";
+const STORAGE_META_KEY = "luis-task-board-meta-v1";
 const DEFAULT_CONFIG = {
   dataSource: {
     type: "local-api",
@@ -14,9 +15,17 @@ const QUADRANTS = [
   { priority: "★★", title: "★★ 第三象限", subtitle: "紧急不重要" },
   { priority: "★", title: "★ 第四象限", subtitle: "不紧急不重要" },
 ];
+const POLL_INTERVAL_MS = 12000;
+const SAVE_DEBOUNCE_MS = 900;
 
 let tasks = [];
 let currentView = "board";
+let pollHandle = null;
+let saveHandle = null;
+let lastServerUpdatedAt = null;
+let lastSavedSignature = "";
+let lastSyncMessage = "";
+let syncing = false;
 const runtimeConfig = resolveConfig();
 const filters = { role: "" };
 
@@ -50,6 +59,16 @@ viewTabs.forEach((button) => {
   });
 });
 
+window.addEventListener("focus", () => {
+  void checkForRemoteUpdates(true);
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    void checkForRemoteUpdates(true);
+  }
+});
+
 function resolveConfig() {
   const incoming = window.TASK_BOARD_CONFIG || {};
   return {
@@ -66,6 +85,23 @@ function getDataSource() {
   return runtimeConfig.dataSource || DEFAULT_CONFIG.dataSource;
 }
 
+function readMeta() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_META_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function writeMeta(patch) {
+  const next = { ...readMeta(), ...patch };
+  localStorage.setItem(STORAGE_META_KEY, JSON.stringify(next));
+}
+
+function tasksSignature(list) {
+  return JSON.stringify(list);
+}
+
 function loadTasksFromLocalStorage() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -77,45 +113,97 @@ function loadTasksFromLocalStorage() {
   }
 }
 
-function persistTasks() {
+function setSyncStatus(message, tone = "ok") {
+  lastSyncMessage = message;
+  syncStatus.textContent = message;
+  syncStatus.dataset.tone = tone;
+}
+
+function cacheTasksLocally() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
-  void saveTasksToServer();
+  writeMeta({ cachedAt: new Date().toISOString() });
+}
+
+function persistTasks() {
+  cacheTasksLocally();
+  scheduleSave();
+}
+
+function scheduleSave() {
+  if (saveHandle) clearTimeout(saveHandle);
+  saveHandle = setTimeout(() => {
+    saveHandle = null;
+    void saveTasksToServer();
+  }, SAVE_DEBOUNCE_MS);
 }
 
 async function loadTasksFromServer() {
   const source = getDataSource();
   try {
-    const data = source.type === "supabase"
+    const payload = source.type === "supabase"
       ? await loadTasksFromSupabase(source)
       : await loadTasksFromLocalApi(source);
-    if (!Array.isArray(data)) throw new Error("invalid tasks payload");
-    syncStatus.textContent = source.type === "supabase" ? "云端同步已连接" : "本地同步已连接";
-    return data;
+    const nextTasks = Array.isArray(payload.tasks) ? payload.tasks : payload;
+    if (!Array.isArray(nextTasks)) throw new Error("invalid tasks payload");
+    lastServerUpdatedAt = payload.updatedAt || lastServerUpdatedAt;
+    lastSavedSignature = tasksSignature(nextTasks);
+    cacheRemoteMarker();
+    setSyncStatus(source.type === "supabase" ? buildSyncLabel("云端已同步") : "本地同步已连接");
+    return nextTasks;
   } catch {
-    syncStatus.textContent = "离线模式（本地缓存）";
+    setSyncStatus("离线模式（本地缓存）", "warn");
     return loadTasksFromLocalStorage();
   }
 }
 
+function cacheRemoteMarker() {
+  writeMeta({
+    remoteUpdatedAt: lastServerUpdatedAt,
+    lastSavedSignature,
+  });
+}
+
+function buildSyncLabel(prefix) {
+  if (!lastServerUpdatedAt) return prefix;
+  const stamp = new Date(lastServerUpdatedAt).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `${prefix} · ${stamp}`;
+}
+
 async function saveTasksToServer() {
   const source = getDataSource();
+  const signature = tasksSignature(tasks);
+  if (signature === lastSavedSignature || syncing) return;
+  syncing = true;
+  setSyncStatus("正在同步…", "pending");
   try {
     if (source.type === "supabase") {
-      await saveTasksToSupabase(source, tasks);
-      syncStatus.textContent = "云端同步已连接";
+      const updatedAt = await saveTasksToSupabase(source, tasks);
+      lastServerUpdatedAt = updatedAt || new Date().toISOString();
+      lastSavedSignature = signature;
+      cacheRemoteMarker();
+      setSyncStatus(buildSyncLabel("云端已同步"));
       return;
     }
     await saveTasksToLocalApi(source, tasks);
-    syncStatus.textContent = "本地同步已连接";
+    lastSavedSignature = signature;
+    setSyncStatus("本地同步已连接");
   } catch {
-    syncStatus.textContent = "本地已保存，云端未同步";
+    setSyncStatus("已保存在本机，稍后自动重试", "warn");
+  } finally {
+    syncing = false;
   }
 }
 
 async function loadTasksFromLocalApi(source) {
   const response = await fetch(source.apiEndpoint, { cache: "no-store" });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
+  const data = await response.json();
+  return { tasks: data, updatedAt: null };
 }
 
 async function saveTasksToLocalApi(source, payload) {
@@ -153,9 +241,26 @@ async function loadTasksFromSupabase(source) {
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const rows = await response.json();
   if (!Array.isArray(rows) || rows.length === 0) {
-    return structuredClone(DEFAULT_TASKS);
+    return { tasks: structuredClone(DEFAULT_TASKS), updatedAt: null };
   }
-  return Array.isArray(rows[0].tasks) ? rows[0].tasks : structuredClone(DEFAULT_TASKS);
+  return {
+    tasks: Array.isArray(rows[0].tasks) ? rows[0].tasks : structuredClone(DEFAULT_TASKS),
+    updatedAt: rows[0].updated_at || null,
+  };
+}
+
+async function fetchRemoteUpdatedAt(source) {
+  assertSupabaseConfig(source);
+  const table = source.table || "task_boards";
+  const boardId = encodeURIComponent(source.boardId || "laolu-main");
+  const url = `${source.supabaseUrl}/rest/v1/${table}?board_id=eq.${boardId}&select=updated_at`;
+  const response = await fetch(url, {
+    cache: "no-store",
+    headers: buildSupabaseHeaders(source),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const rows = await response.json();
+  return rows?.[0]?.updated_at || null;
 }
 
 async function saveTasksToSupabase(source, payload) {
@@ -176,6 +281,44 @@ async function saveTasksToSupabase(source, payload) {
     body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const rows = await response.json();
+  return rows?.[0]?.updated_at || body.updated_at;
+}
+
+async function checkForRemoteUpdates(force = false) {
+  const source = getDataSource();
+  if (source.type !== "supabase" || syncing) return;
+  try {
+    const remoteUpdatedAt = await fetchRemoteUpdatedAt(source);
+    if (!remoteUpdatedAt) return;
+    const shouldRefresh = force || (!lastServerUpdatedAt || remoteUpdatedAt !== lastServerUpdatedAt);
+    if (!shouldRefresh) return;
+    const signatureBefore = tasksSignature(tasks);
+    const payload = await loadTasksFromSupabase(source);
+    const nextSignature = tasksSignature(payload.tasks);
+    lastServerUpdatedAt = payload.updatedAt || remoteUpdatedAt;
+    lastSavedSignature = nextSignature;
+    cacheRemoteMarker();
+    if (nextSignature !== signatureBefore) {
+      tasks = payload.tasks;
+      cacheTasksLocally();
+      render();
+    }
+    setSyncStatus(buildSyncLabel(force ? "云端已校准" : "已同步最新内容"));
+  } catch {
+    if (!lastSyncMessage.includes("离线") && !lastSyncMessage.includes("本机")) {
+      setSyncStatus("同步检查失败，保留当前内容", "warn");
+    }
+  }
+}
+
+function startRealtimeLite() {
+  const source = getDataSource();
+  if (source.type !== "supabase") return;
+  if (pollHandle) clearInterval(pollHandle);
+  pollHandle = setInterval(() => {
+    void checkForRemoteUpdates(false);
+  }, POLL_INTERVAL_MS);
 }
 
 function priorityOf(task) {
@@ -456,8 +599,9 @@ function escapeHtml(value) {
 
 async function init() {
   tasks = await loadTasksFromServer();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+  cacheTasksLocally();
   render();
+  startRealtimeLite();
   if ("serviceWorker" in navigator) {
     try {
       await navigator.serviceWorker.register("./service-worker.js");
