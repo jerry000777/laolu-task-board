@@ -26,6 +26,7 @@ let lastServerUpdatedAt = null;
 let lastSavedSignature = "";
 let lastSyncMessage = "";
 let syncing = false;
+let activeMobileCategory = CATEGORIES[0];
 const runtimeConfig = resolveConfig();
 const filters = { role: "" };
 
@@ -39,6 +40,7 @@ const completedList = document.getElementById("completedList");
 const roleFilter = document.getElementById("roleFilter");
 const coreWorkList = document.getElementById("coreWorkList");
 const syncStatus = document.getElementById("syncStatus");
+const mobileCategoryNav = document.getElementById("mobileCategoryNav");
 const columnTemplate = document.getElementById("columnTemplate");
 const taskTemplate = document.getElementById("taskTemplate");
 const quadrantTemplate = document.getElementById("quadrantTemplate");
@@ -498,10 +500,27 @@ function renderCoreWork(pending) {
   });
 }
 
+function renderMobileCategoryNav() {
+  if (!mobileCategoryNav) return;
+  mobileCategoryNav.innerHTML = "";
+  CATEGORIES.forEach((category) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `mobile-category-btn${category === activeMobileCategory ? " is-active" : ""}`;
+    button.textContent = category;
+    button.addEventListener("click", () => {
+      activeMobileCategory = category;
+      render();
+    });
+    mobileCategoryNav.appendChild(button);
+  });
+}
+
 function renderBoard(pending) {
   board.innerHTML = "";
   CATEGORIES.forEach((category) => {
     const fragment = columnTemplate.content.cloneNode(true);
+    const columnEl = fragment.querySelector(".column");
     const titleEl = fragment.querySelector(".column-title");
     const countEl = fragment.querySelector(".column-count");
     const listEl = fragment.querySelector(".task-list");
@@ -509,6 +528,8 @@ function renderBoard(pending) {
     const form = fragment.querySelector(".inline-task-form");
     const items = pending.filter((task) => task.category === category);
 
+    columnEl.dataset.category = category;
+    columnEl.classList.toggle("is-mobile-active", category === activeMobileCategory);
     titleEl.textContent = category;
     countEl.textContent = `${items.length} 条待办`;
     buildInlineForm(form, category);
@@ -574,7 +595,11 @@ function renderCompleted() {
 
 function render() {
   const pending = filteredPendingTasks();
+  if (!CATEGORIES.includes(activeMobileCategory)) {
+    activeMobileCategory = CATEGORIES[0];
+  }
   renderCoreWork(pending);
+  renderMobileCategoryNav();
   renderBoard(pending);
   renderQuadrants(pending);
   renderCompleted();
