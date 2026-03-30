@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>老路工作看板</title>
+    <meta name="theme-color" content="#0f766e" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="工作看板" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar card">
+        <div class="topbar-title centered">
+          <h1>老路工作看板</h1>
+          <p class="topbar-note">A clear weekly dashboard for focus, delegation, and execution.</p>
+          <p id="syncStatus" class="sync-status">云端同步已连接</p>
+        </div>
+        <div class="view-switch" role="tablist" aria-label="页面视图">
+          <button class="ghost-btn view-tab is-active" data-view="board" type="button">工作看板</button>
+          <button class="ghost-btn view-tab" data-view="quadrant" type="button">四象限</button>
+        </div>
+      </header>
+
+      <section class="top-tools">
+        <div class="filters card">
+          <div class="card-title-row card-title-row-compact">
+            <div>
+              <h2>筛选</h2>
+              <p class="section-note">只保留你真正会用的筛选。</p>
+            </div>
+          </div>
+          <div class="filter-row single-filter">
+            <label>
+              执行方式
+              <select id="roleFilter" name="roleFilter">
+                <option value="">全部</option>
+                <option value="assistant">助理</option>
+                <option value="ai">AI</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div id="coreWork" class="core-work card">
+          <div class="card-title-row card-title-row-compact">
+            <div>
+              <h2>核心工作</h2>
+              <p class="section-note">自动汇总所有紧急且重要的事。</p>
+            </div>
+            <span class="core-work-tag">★★★★ 第一象限</span>
+          </div>
+          <div id="coreWorkList" class="core-work-list"></div>
+        </div>
+      </section>
+
+      <section id="boardView" class="view-panel">
+        <section id="board" class="board"></section>
+      </section>
+
+      <section id="quadrantView" class="view-panel" hidden>
+        <div id="quadrantBoard" class="quadrant-board"></div>
+      </section>
+
+      <section id="legacyFilters" class="filters card" hidden>
+        <div class="filter-row">
+          <label>
+            星级
+            <select id="priorityFilter" name="priorityFilter">
+              <option value="">全部</option>
+              <option value="★★★★">★★★★</option>
+              <option value="★★★">★★★</option>
+              <option value="★★">★★</option>
+              <option value="★">★</option>
+            </select>
+          </label>
+          <label>
+            板块
+            <select id="categoryFilter" name="categoryFilter">
+              <option value="">全部</option>
+              <option value="Money">Money</option>
+              <option value="COO">COO</option>
+              <option value="Study">Study</option>
+              <option value="IP">IP</option>
+              <option value="Value Investing">Value Investing</option>
+              <option value="个人杂事">个人杂事</option>
+            </select>
+          </label>
+          <label>
+            关键词
+            <input id="searchFilter" name="searchFilter" type="text" placeholder="例如：助理、OpenClaw、域名" />
+          </label>
+        </div>
+      </section>
+
+      <section id="completedSection" class="completed card">
+        <div class="card-title-row">
+          <div>
+            <h2>已完成</h2>
+            <p id="completedCount"></p>
+          </div>
+        </div>
+        <div id="completedList" class="task-list"></div>
+      </section>
+    </div>
+
+    <template id="columnTemplate">
+      <section class="column card">
+        <div class="card-title-row card-title-row-compact">
+          <div>
+            <h2 class="column-title-row-text">
+              <span class="column-title"></span>
+              <button class="quick-add-btn" type="button" title="新增该板块工作" aria-label="新增该板块工作">
+                <span class="quick-add-plus">+</span>
+              </button>
+            </h2>
+            <p class="column-count"></p>
+          </div>
+        </div>
+        <form class="inline-task-form" hidden>
+          <input class="inline-title" name="inlineTitle" type="text" placeholder="新增一项工作，例如：投资人风险报告" required />
+          <input class="inline-goal" name="inlineGoal" type="text" placeholder="核心任务，例如：今天出可汇报版本" required />
+          <input class="inline-delegate" name="inlineDelegate" type="text" placeholder="助理 / AI 可做，例如：助理收材料，AI 起草初版" />
+          <select class="inline-priority" name="inlinePriority">
+            <option value="★★★★">★★★★ 紧急且重要</option>
+            <option value="★★★">★★★ 重要不紧急</option>
+            <option value="★★">★★ 紧急不重要</option>
+            <option value="★">★ 不紧急不重要</option>
+          </select>
+          <div class="inline-form-actions">
+            <button type="submit" class="primary-btn">添加</button>
+            <button type="button" class="ghost-btn inline-cancel-btn">取消</button>
+          </div>
+        </form>
+        <div class="task-list"></div>
+      </section>
+    </template>
+
+    <template id="taskTemplate">
+      <article class="task-card">
+        <label class="check-wrap">
+          <input type="checkbox" class="task-check" />
+          <span class="checkmark"></span>
+        </label>
+        <div class="task-main">
+          <div class="task-head">
+            <input class="task-title task-editable" />
+          </div>
+          <div class="task-meta">
+            <select class="task-priority-select" name="taskPriority">
+              <option value="★★★★">★★★★</option>
+              <option value="★★★">★★★</option>
+              <option value="★★">★★</option>
+              <option value="★">★</option>
+            </select>
+            <span class="task-quadrant-badge"></span>
+          </div>
+          <div class="task-grid">
+            <label>
+              <span>核心任务</span>
+              <textarea class="task-goal task-editable" rows="2"></textarea>
+            </label>
+            <label>
+              <span>助理 / AI 可做</span>
+              <textarea class="task-delegate task-editable" rows="2"></textarea>
+            </label>
+          </div>
+        </div>
+        <button class="delete-btn" title="删除任务">删除</button>
+      </article>
+    </template>
+
+    <template id="quadrantTemplate">
+      <section class="quadrant card">
+        <div class="card-title-row card-title-row-compact">
+          <div>
+            <h2 class="quadrant-title"></h2>
+            <p class="quadrant-subtitle"></p>
+          </div>
+        </div>
+        <div class="task-list"></div>
+      </section>
+    </template>
+
+    <script src="./config.js"></script>
+    <script src="./app.js"></script>
+  </body>
+  </html>
